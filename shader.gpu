@@ -1,116 +1,111 @@
 // Vertex Shader
-const vertexShaderSource = `
-attribute vec3 aPosition;        // Incoming vertex position (x, y, z)
-attribute vec3 aNormal;          // Incoming vertex normal   (nx, ny, nz)
-attribute vec3 aTangent;         // vertex tangent  (tx, ty, tz)
-attribute vec2 aTexCoord;        // vertex texture coordinate (u,v)
+const vertexShaderSource = 
+`attribute vec3 aPosition;        
+attribute vec3 aNormal;          
+attribute vec3 aTangent;         
+attribute vec2 aTexCoord;        
 
-// Matrices
-uniform mat4 uModelViewMatrix;   // Model+View
-uniform mat4 uProjectionMatrix;  // Projection
-uniform mat4 uNormalMatrix;      // for transforming normals
+uniform mat4 uModelViewMatrix;   
+uniform mat4 uProjectionMatrix;  
+uniform mat4 uNormalMatrix;      
 
-// Varying variables passed to fragment shader
-varying vec3 vPosWorld;          // position in eye/world space
-varying vec2 vTexCoord;          // texture coordinate
-varying mat3 vTBN;               // TBN matrix for normal mapping
+// Additional uniforms for texture scaling
+uniform float uTextureScale;
+uniform vec2 uStartScalePoint;
+
+// Varying variables to fragment shader
+varying vec3 vPosWorld;          
+varying vec2 vTexCoord;          
+varying mat3 vTBN;               
 
 void main() {
-    // 1) Compute the world-space position of the vertex
+    // 1) World-space position
     vec4 posWorld4 = uModelViewMatrix * vec4(aPosition, 1.0);
     vPosWorld = posWorld4.xyz;
 
-    // 2) Transform the normal by the normal matrix
-    //    Priority to normal in  Gram-Schmidt approach
+    // 2) Transform normal
     vec3 N = normalize(mat3(uNormalMatrix) * aNormal);
 
-    // 3) Transform the tangent by the normal matrix
-    //    Then orthogonalize tangent to normal, giving priority to normal.
+    // 3) Transform tangent, orthogonalize
     vec3 T = normalize(mat3(uNormalMatrix) * aTangent);
-    // Gram-Schmidt step:
     T = normalize(T - dot(T, N) * N);
 
-    // 4) Compute the bitangent as cross(N, T).
+    // 4) Bitangent
     vec3 B = cross(N, T);
 
-    // 5) Construct TBN
+    // 5) TBN
     vTBN = mat3(T, B, N);
 
-    // 6) Pass the texture coordinate
-    vTexCoord = aTexCoord;
-
-    // 7) Compute the final clip-space position
+    // 6) Texture scaling around center
+    vec2 shifted = aTexCoord - uStartScalePoint;
+    
+    shifted *= uTextureScale;
+    shifted += uStartScalePoint;
+    vTexCoord = clamp(shifted, 0.0, 1.0); // Clamping to [0,1]
+    
+    // 7) Final position
     gl_Position = uProjectionMatrix * posWorld4;
 }`;
 
-
 // Fragment Shader
-const fragmentShaderSource = `
-#ifdef GL_FRAGMENT_PRECISION_HIGH
+const fragmentShaderSource = 
+`#ifdef GL_FRAGMENT_PRECISION_HIGH
    precision highp float;
 #else
    precision mediump float;
 #endif
 
-// Uniforms for lighting
-uniform vec3 uLightPos;      // light position in same space as vPosWorld
+// Lighting
+uniform vec3  uLightPos;     
 uniform float uAmbientFactor;
 uniform float uDiffuseFactor;
 uniform float uSpecularFactor;
 uniform float uShininess;
 
-// Uniform color base
-uniform vec4 uColor;
+// Base color
+uniform vec4 uColor;         
 
-// Camera direction assumption for shading
-uniform vec3 uViewDir;
+// Camera direction
+uniform vec3 uViewDir;       
 
-// Samplers for texturing
-uniform sampler2D uDiffuseSampler;  // diffuse texture
-uniform sampler2D uSpecularSampler; // specular texture
-uniform sampler2D uNormalSampler;   // normal map
+// Textures
+uniform sampler2D uDiffuseSampler;  
+uniform sampler2D uSpecularSampler; 
+uniform sampler2D uNormalSampler;   
 
-// Varyings from vertex shader
+// Varyings
 varying vec3 vPosWorld;
 varying vec2 vTexCoord;
 varying mat3 vTBN;
 
 void main() {
-    // 1) Retrieve normal from normal map (in tangent space), transform to world/eye space
+    // 1) Normal from normal map, transform to world space
     vec3 textureNormal = texture2D(uNormalSampler, vTexCoord).rgb;
     textureNormal = 2.0 * textureNormal - 1.0;
     vec3 N = normalize(vTBN * textureNormal);
 
-    // 2) Compute the light direction
+    // 2) Light direction
     vec3 L = normalize(uLightPos - vPosWorld);
 
-    // 3) Compute the view direction
+    // 3) View direction
     vec3 V = normalize(uViewDir);
 
     // 4) Reflection vector
     vec3 R = reflect(-L, N);
 
-    // 5) Phong components (Ambient, Diffuse, Specular)
-    //    Modulate diffuse by the diffuse texture
-    //    Modulate specular by the specular texture
-    float ambient = uAmbientFactor;
-    float diff = max(dot(N, L), 0.0);
-    float diffuse = uDiffuseFactor * diff;
-    float specAngle = max(dot(R, V), 0.0);
-    float specular = uSpecularFactor * pow(specAngle, uShininess);
+    // 5) Phong components
+    float ambient  = uAmbientFactor;
+    float diff     = max(dot(N, L), 0.0);
+    float diffuse  = uDiffuseFactor * diff;
+    float specTerm = max(dot(R, V), 0.0);
+    float specular = uSpecularFactor * pow(specTerm, uShininess);
 
-    // Combine lighting intensities
-    float intensity = ambient + diffuse + specular;
-
-    // Sample the diffuse texture
-    vec3 diffuseTex = texture2D(uDiffuseSampler, vTexCoord).rgb;
-    // Sample the specular texture
+    // Textures
+    vec3 diffuseTex  = texture2D(uDiffuseSampler,  vTexCoord).rgb;
     vec3 specularTex = texture2D(uSpecularSampler, vTexCoord).rgb;
 
-    // The final color uses the base color tinted by the diffuse texture
-    // plus specular tinted by the specular texture
     vec3 color = diffuseTex * diffuse + specularTex * specular + (ambient * diffuseTex);
 
     // Write final pixel color
-    gl_FragColor = vec4(color, 1.0);
+    gl_FragColor = vec4(color, 1.0) * uColor; 
 }`;

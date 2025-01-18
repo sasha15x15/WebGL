@@ -4,48 +4,81 @@ let gl;          // The WebGL rendering context
 let surface;     // A 'Model' object for our surface geometry
 let shProgram;   // The compiled & linked shader program
 let spaceball;   // Object to handle trackball-like rotation (user interaction)
+let sphere
 
 // Light rotation angle around the Z-axis
 let lightAngle = 0.0;
 
+// (u,v) parameters for  sphere. Initialize to place it visibly on the surface.
+let paramU = Math.PI;   // Start at u = π (opposite side)
+let paramV = 0.0;       // Start at v = 0 (equator)
+
+// sphere radius
+let sphereRadius = 0.1;
+
+// Texture scaling parameters
+let textureScale = 1.0;
+let scaleCenter = []; // Will be updated based on paramU and paramV
 
 /**
- * A small wrapper object around a compiled and linked GLSL program.
- * Holds references to attribute/uniform locations, so we don't need
- * repeated lookups.
+ * Convert (u, v) parameters to 3D coordinates using the corrugated sphere formula.
+ */
+function paramTo3D(u, v) {
+    let R = 1.0;
+    let a = 0.24;
+    let n = 6;
+
+    let radial = R * Math.cos(v) + a * (1 - Math.sin(v)) * Math.abs(Math.cos(n * u));
+    let x = radial * Math.cos(u);
+    let y = radial * Math.sin(u);
+    let z = R * Math.sin(v);
+    return [x, y, z];
+}
+
+/**
+ * Convert (u, v) to texture coordinates [0,1].
+ */
+function paramToTexCoord(u, v) {
+    let texU = u / (2.0 * Math.PI);          // Assuming u ranges from 0 to 2π
+    let texV = (v + (Math.PI / 2)) / Math.PI; // Assuming v ranges from -π/2 to π/2
+    return [texU, texV];
+}
+
+/**
+ * Shader Program Wrapper
  */
 function ShaderProgram(name, program) {
     this.name = name;
     this.prog = program;
 
-    // -- Attributes --
+    // Attributes
     this.iAttribVertex = gl.getAttribLocation(program, "aPosition");
     this.iAttribNormal = gl.getAttribLocation(program, "aNormal");
     this.iAttribTangent = gl.getAttribLocation(program, "aTangent");
     this.iAttribTexCoord = gl.getAttribLocation(program, "aTexCoord");
 
-    // -- Uniforms --
+    // Uniforms (matrices)
     this.iModelViewMatrix = gl.getUniformLocation(program, "uModelViewMatrix");
     this.iProjectionMatrix = gl.getUniformLocation(program, "uProjectionMatrix");
     this.iNormalMatrix = gl.getUniformLocation(program, "uNormalMatrix");
 
     // Lighting
     this.iLightPos = gl.getUniformLocation(program, "uLightPos");
-
-    // Material/lighting factors
     this.iAmbientFactor = gl.getUniformLocation(program, "uAmbientFactor");
     this.iDiffuseFactor = gl.getUniformLocation(program, "uDiffuseFactor");
     this.iSpecularFactor = gl.getUniformLocation(program, "uSpecularFactor");
     this.iShininess = gl.getUniformLocation(program, "uShininess");
     this.iColor = gl.getUniformLocation(program, "uColor");
+    this.iViewDir = gl.getUniformLocation(program, "uViewDir");
 
-    // Additional uniforms for texturing
+    // Texturing
     this.iDiffuseSampler = gl.getUniformLocation(program, "uDiffuseSampler");
     this.iSpecularSampler = gl.getUniformLocation(program, "uSpecularSampler");
     this.iNormalSampler = gl.getUniformLocation(program, "uNormalSampler");
 
-    // View direction uniform
-    this.iViewDir = gl.getUniformLocation(program, "uViewDir");
+    // Texture scaling
+    this.iTextureScale = gl.getUniformLocation(program, "uTextureScale");
+    this.iStartScalePoint = gl.getUniformLocation(program, "uStartScalePoint");
 
     this.Use = function () {
         gl.useProgram(this.prog);
@@ -53,66 +86,81 @@ function ShaderProgram(name, program) {
 }
 
 /**
- * The animation loop
+ * The main rendering loop.
+ * This function is only called once to start the animation.
  */
 function draw() {
-    // Clear
-    gl.clearColor(51 / 255, 51 / 255, 51 / 255, 1.0);
+    // Clear the canvas
+    gl.clearColor(0.15, 0.15, 0.15, 1.0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    // Projection
+    // Projection Matrix
     let projection = m4.perspective(Math.PI / 8, 1, 8, 12);
 
-    // ModelView from trackball
+    // ModelView Matrix from trackball
     let modelView = spaceball.getViewMatrix();
+    let translate = m4.translation(0, 0, -10);
+    modelView = m4.multiply(translate, modelView);
 
-    // Translate scene
-    let translateToPointZero = m4.translation(0, 0, -10);
-    modelView = m4.multiply(translateToPointZero, modelView);
+    // Normal Matrix
+    let normalMatrix = m4.transpose(m4.inverse(modelView));
 
-    // Normal matrix
-    let normalMatrix = m4.inverse(modelView);
-    normalMatrix = m4.transpose(normalMatrix);
-
-    // Pass them to GPU
+    // Pass matrices to shader
     gl.uniformMatrix4fv(shProgram.iModelViewMatrix, false, modelView);
     gl.uniformMatrix4fv(shProgram.iProjectionMatrix, false, projection);
     gl.uniformMatrix4fv(shProgram.iNormalMatrix, false, normalMatrix);
 
-    // Animate light around Z-axis
-    lightAngle += 0.001;
-    lightAngle %= (2.0 * Math.PI);
+    // Update and pass light position
+    lightAngle += 0.002;
+    if (lightAngle > 2.0 * Math.PI) lightAngle -= 2.0 * Math.PI;
 
-    // Light position
-    let radius = 30.0;
-    let lx = radius * Math.cos(lightAngle);
-    let ly = radius * Math.sin(lightAngle);
+    let lRadius = 30.0;
+    let lx = lRadius * Math.cos(lightAngle);
+    let ly = lRadius * Math.sin(lightAngle);
     let lz = -20.0;
     gl.uniform3fv(shProgram.iLightPos, [lx, ly, lz]);
 
-    // Some material parameters
-    gl.uniform4fv(shProgram.iColor, [1.0, 0.75, 0.0, 1.0]); // gold color
+    // Material properties for the surface
     gl.uniform1f(shProgram.iAmbientFactor, 0.2);
     gl.uniform1f(shProgram.iDiffuseFactor, 0.6);
     gl.uniform1f(shProgram.iSpecularFactor, 0.8);
     gl.uniform1f(shProgram.iShininess, 20.0);
-
-    // We'll just fix the view direction to (0,0,1) for demonstration,
-    // as in the original Project 1 approach. 
-    // If you want it from the real camera position, you can compute it from modelView.
+    gl.uniform4fv(shProgram.iColor, [1.0, 1.0, 1.0, 1.0]);
     gl.uniform3fv(shProgram.iViewDir, [0.0, 0.0, 1.0]);
 
-    // Draw
+    // Update scaleCenter based on paramU and paramV
+    scaleCenter = paramToTexCoord(paramU, paramV);
+
+    // Texture scaling
+    gl.uniform1f(shProgram.iTextureScale, textureScale);
+    gl.uniform2fv(shProgram.iStartScalePoint, scaleCenter);
+
+    // Draw the main surface
     surface.Draw();
+
+    // Draw the red sphere at (paramU, paramV)
+    let sphereCenter = paramTo3D(paramU, paramV);
+    let sphereVerts = generateSphere(sphereCenter, sphereRadius);
+    sphere.BufferData(sphereVerts);
+
+    // Set material properties for the sphere
+    gl.uniform1f(shProgram.iAmbientFactor, 1.0);
+    gl.uniform1f(shProgram.iDiffuseFactor, 0.0);
+    gl.uniform1f(shProgram.iSpecularFactor, 0.0);
+    gl.uniform1f(shProgram.iShininess, 1.0);
+    gl.uniform4fv(shProgram.iColor, [1.0, 0.0, 0.0, 0.0]);
+
+    sphere.Draw();
 
     requestAnimationFrame(draw);
 }
 
 /**
- * Initialization
+ * Initialization function.
+ * Sets up WebGL, shaders, models, textures, and event handlers.
  */
 function initGL() {
-    // 1) Create shaders
+    // Compile vertex shader
     let vsh = gl.createShader(gl.VERTEX_SHADER);
     gl.shaderSource(vsh, vertexShaderSource);
     gl.compileShader(vsh);
@@ -120,6 +168,7 @@ function initGL() {
         throw new Error("Vertex shader error:\n" + gl.getShaderInfoLog(vsh));
     }
 
+    // Compile fragment shader
     let fsh = gl.createShader(gl.FRAGMENT_SHADER);
     gl.shaderSource(fsh, fragmentShaderSource);
     gl.compileShader(fsh);
@@ -127,7 +176,7 @@ function initGL() {
         throw new Error("Fragment shader error:\n" + gl.getShaderInfoLog(fsh));
     }
 
-    // 2) Link
+    // Link shaders into a program
     let prog = gl.createProgram();
     gl.attachShader(prog, vsh);
     gl.attachShader(prog, fsh);
@@ -136,37 +185,36 @@ function initGL() {
         throw new Error("Link error:\n" + gl.getProgramInfoLog(prog));
     }
 
-    // 3) Create wrapper
-    shProgram = new ShaderProgram("BasicProgram", prog);
+    // Create shader program wrapper
+    shProgram = new ShaderProgram("MainProgram", prog);
     shProgram.Use();
 
-    // 4) Create geometry data
+    // Create the main surface model
     let data = {};
     CreateSurfaceData(data);
-
-    // 5) Create model and upload buffers
     surface = new Model("Surface");
-    surface.BufferData(
-        data.positions,
-        data.normals,
-        data.tangents,
-        data.texcoords,
-        data.indices
-    );
+    surface.BufferData(data.positions, data.normals, data.tangents, data.texcoords, data.indices);
 
-    // 6) Load textures
+    // Load textures (ensure the paths are correct)
     surface.iTextureDiffuse = LoadTexture("surfaceTextures/diffuse.png");
     surface.iTextureSpecular = LoadTexture("surfaceTextures/specular.png");
     surface.iTextureNormal = LoadTexture("surfaceTextures/normal.png");
 
-    // 7) Enable depth test
+    // Create the small sphere model
+    sphere = new PointModel("Sphere");
+
+    // Initialize scaleCenter based on initial paramU and paramV
+    scaleCenter = paramToTexCoord(paramU, paramV);
+
+    // Enable depth testing
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
     gl.clearDepth(1.0);
 }
 
 /**
- * Main entry point
+ * Main entry point.
+ * Initializes WebGL and starts the rendering loop.
  */
 function init() {
     let canvas = document.getElementById("webglcanvas");
@@ -183,20 +231,22 @@ function init() {
         initGL();
     } catch (e) {
         document.getElementById("canvas-holder").innerHTML =
-            "<p>Could not init WebGL:</p>" + e;
+            "<p>Could not initialize WebGL:</p>" + e;
         return;
     }
 
-    // Set up trackball
+    // Set up trackball rotation
     spaceball = new TrackballRotator(canvas, null, 0);
 
-    // Connect UI
-    vSlider = document.getElementById("vSlider");
-    uSlider = document.getElementById("uSlider");
+    // Connect UI sliders
+    let vSlider = document.getElementById("vSlider");
+    let uSlider = document.getElementById("uSlider");
+    let scaleSlider = document.getElementById("scaleSlider");
     let vValue = document.getElementById("vValue");
     let uValue = document.getElementById("uValue");
+    let scaleValue = document.getElementById("scaleValue");
 
-    // Sync text boxes with slider changes
+    // Sync sliders with input fields
     vSlider.oninput = function () {
         vValue.value = vSlider.value;
         rebuildSurface();
@@ -213,6 +263,14 @@ function init() {
         uSlider.value = uValue.value;
         rebuildSurface();
     };
+    scaleSlider.oninput = function () {
+        scaleValue.value = scaleSlider.value;
+        textureScale = parseFloat(scaleSlider.value);
+    };
+    scaleValue.oninput = function () {
+        scaleSlider.value = scaleValue.value;
+        textureScale = parseFloat(scaleValue.value);
+    };
 
     function rebuildSurface() {
         let data = {};
@@ -226,6 +284,31 @@ function init() {
         );
     }
 
-    // Start loop
+    // Keyboard event handler to move the sphere without affecting the light
+    document.addEventListener("keydown", (event) => {
+        const step = 0.05; // Increment step in radians
+
+        switch (event.key.toLowerCase()) {
+            case "a":
+                paramU -= step;
+                if (paramU < 0) paramU += 2.0 * Math.PI;
+                break;
+            case "d":
+                paramU += step;
+                if (paramU > 2.0 * Math.PI) paramU -= 2.0 * Math.PI;
+                break;
+            case "w":
+                paramV += step;
+                if (paramV > Math.PI / 2) paramV = Math.PI / 2;
+                break;
+            case "s":
+                paramV -= step;
+                if (paramV < -Math.PI / 2) paramV = -Math.PI / 2;
+                break;
+        }
+
+    });
+
+    // Start the rendering loop
     requestAnimationFrame(draw);
 }

@@ -9,76 +9,44 @@ function deg2rad(angle) {
  * Used to replicate vertices for flat shading (one normal per face).
  */
 function FlatVertex(px, py, pz, nx, ny, nz, tx, ty, tz, u, v) {
-    this.x = px;
-    this.y = py;
-    this.z = pz;
-    this.nx = nx;
-    this.ny = ny;
-    this.nz = nz;
-    this.tx = tx;
-    this.ty = ty;
-    this.tz = tz;
-    this.u = u;
-    this.v = v;
+    this.x = px; this.y = py; this.z = pz;
+    this.nx = nx; this.ny = ny; this.nz = nz;
+    this.tx = tx; this.ty = ty; this.tz = tz;
+    this.u = u; this.v = v;
 }
 
-/**
- * The Model class encapsulates GPU buffer setup (positions, normals, tangents, texcoords)
- * + draw function.
- */
+// Main Model for the surface
 function Model(name) {
     this.name = name;
 
-    // GPU buffer handles
+    // GPU buffers
     this.iVertexBuffer = gl.createBuffer();
     this.iNormalBuffer = gl.createBuffer();
     this.iTangentBuffer = gl.createBuffer();
     this.iTexCoordBuffer = gl.createBuffer();
     this.iIndexBuffer = gl.createBuffer();
-
-    // Number of indices
     this.count = 0;
 
-    // For textures
+    // Textures
     this.iTextureDiffuse = null;
     this.iTextureSpecular = null;
     this.iTextureNormal = null;
 
-    /**
-     * Upload data to GPU:
-     *  positions -> iVertexBuffer
-     *  normals   -> iNormalBuffer
-     *  tangents  -> iTangentBuffer
-     *  texcoords -> iTexCoordBuffer
-     *  indices   -> iIndexBuffer
-     */
+    // Helper
+    function uploadToGPU(target, buffer, data) {
+        gl.bindBuffer(target, buffer);
+        gl.bufferData(target, data, gl.STATIC_DRAW);
+    }
+
     this.BufferData = function (positions, normals, tangents, texcoords, indices) {
-        // Positions
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.iVertexBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
-
-        // Normals
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.iNormalBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW);
-
-        // Tangents
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.iTangentBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, tangents, gl.STATIC_DRAW);
-
-        // Texcoords
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.iTexCoordBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, texcoords, gl.STATIC_DRAW);
-
-        // Indices
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.iIndexBuffer);
-        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
-
+        uploadToGPU(gl.ARRAY_BUFFER, this.iVertexBuffer, positions);
+        uploadToGPU(gl.ARRAY_BUFFER, this.iNormalBuffer, normals);
+        uploadToGPU(gl.ARRAY_BUFFER, this.iTangentBuffer, tangents);
+        uploadToGPU(gl.ARRAY_BUFFER, this.iTexCoordBuffer, texcoords);
+        uploadToGPU(gl.ELEMENT_ARRAY_BUFFER, this.iIndexBuffer, indices);
         this.count = indices.length;
     };
 
-    /**
-     * Draw call, enabling all required attributes.
-     */
     this.Draw = function () {
         // Diffuse
         gl.activeTexture(gl.TEXTURE0);
@@ -123,6 +91,27 @@ function Model(name) {
     };
 }
 
+function PointModel(name) {
+    this.name = name;
+    this.iVertexBuffer = gl.createBuffer();
+    this.count = 0;
+
+    this.BufferData = function (positionArray) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.iVertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, positionArray, gl.STATIC_DRAW);
+        this.count = positionArray.length / 3;
+    };
+
+    this.Draw = function () {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.iVertexBuffer);
+        gl.enableVertexAttribArray(shProgram.iAttribVertex);
+        gl.vertexAttribPointer(shProgram.iAttribVertex, 3, gl.FLOAT, false, 0, 0);
+
+        // Draw as triangles
+        gl.drawArrays(gl.TRIANGLES, 0, this.count);
+    };
+}
+
 /**
  * Compute a single triangle's face normal (unit vector) and the face area.
  */
@@ -141,54 +130,42 @@ function computeFaceNormalAndArea(p0, p1, p2) {
  * Compute tangents for each face.
  */
 function computeFaceTangent(p0, p1, p2, uv0, uv1, uv2) {
-    // edges
     let edge1 = m4.subtractVectors(p1, p0);
     let edge2 = m4.subtractVectors(p2, p0);
     let deltaUV1 = [uv1[0] - uv0[0], uv1[1] - uv0[1]];
     let deltaUV2 = [uv2[0] - uv0[0], uv2[1] - uv0[1]];
     let f = (deltaUV1[0] * deltaUV2[1] - deltaUV1[1] * deltaUV2[0]);
     if (Math.abs(f) < 1e-14) {
-        // fallback
         return [1.0, 0.0, 0.0];
     }
     f = 1.0 / f;
-    let tx = f * (edge1[0] * deltaUV2[1] - edge2[0] * deltaUV1[1]);
-    let ty = f * (edge1[1] * deltaUV2[1] - edge2[1] * deltaUV1[1]);
-    let tz = f * (edge1[2] * deltaUV2[1] - edge2[2] * deltaUV1[1]);
-    return [tx, ty, tz];
+    return [
+        f * (edge1[0] * deltaUV2[1] - edge2[0] * deltaUV1[1]),
+        f * (edge1[1] * deltaUV2[1] - edge2[1] * deltaUV1[1]),
+        f * (edge1[2] * deltaUV2[1] - edge2[2] * deltaUV1[1])
+    ];
 }
 
-/**
- * Creates the 3D surface geometry using Weighted-Average vertex normals,
- * replicates each face for Flat Shading, and also assigns texture coords
- * plus tangent.
- */
+// Create the "corrugated sphere"
 function CreateSurfaceData(data) {
-    // 1) Same as Project 1: get user resolution
     let vCount = parseInt(vSlider.value);
     let uCount = parseInt(uSlider.value);
 
-    // 2) Parameter ranges
     let vDegMin = -90, vDegMax = 90;
     let uDegMin = 0, uDegMax = 360;
     let stepV = (vDegMax - vDegMin) / vCount;
     let stepU = (uDegMax - uDegMin) / uCount;
 
-    // Build angle arrays
     let vAngles = Array.from({ length: vCount + 1 }, (_, i) => deg2rad(vDegMin + i * stepV));
     let uAngles = Array.from({ length: uCount + 1 }, (_, j) => deg2rad(uDegMin + j * stepU));
 
     // "Corrugated sphere" parameters
-    let R = 1.0;
-    let a = 0.24;
-    let n = 6;
+    let R = 1.0, a = 0.24, n = 6;
 
-    // 3) Build vertex grid
+    // Build vertex grid
     let vertexGrid = vAngles.map(vRad => {
         return uAngles.map(uRad => {
-            // Choose whichever formula you like:
             let radial = R * Math.cos(vRad) + a * (1 - Math.sin(vRad)) * Math.abs(Math.cos(n * uRad));
-
             let x = radial * Math.cos(uRad);
             let y = radial * Math.sin(uRad);
             let z = R * Math.sin(vRad);
@@ -196,11 +173,9 @@ function CreateSurfaceData(data) {
         });
     });
 
-    function indexOf(iv, iu) {
-        return iv * (uCount + 1) + iu;
-    }
+    function indexOf(iv, iu) { return iv * (uCount + 1) + iu; }
 
-    // 4) Face indices
+    // Face indices
     let faces = [];
     for (let iv = 0; iv < vCount; iv++) {
         for (let iu = 0; iu < uCount; iu++) {
@@ -212,7 +187,7 @@ function CreateSurfaceData(data) {
         }
     }
 
-    // Weighted-average vertex normals
+    // weighted normals
     let accumNormals = vertexGrid.flat().map(() => [0, 0, 0]);
     faces.forEach(([iA, iB, iC]) => {
         let pA = vertexGrid.flat()[iA];
@@ -224,26 +199,18 @@ function CreateSurfaceData(data) {
             accumNormals[idx] = m4.addVectors(accumNormals[idx], scaled);
         });
     });
-    let normalizedNormals = accumNormals.map(nrm => m4.normalize(nrm));
+    let normalizedNormals = accumNormals.map(n => m4.normalize(n));
 
-    // 5) For Flat Shading
-    let flatVertices = [];
-    let flatIndices = [];
+    // Flat replicate
+    let flatVertices = [], flatIndices = [];
     let idxCounter = 0;
 
-    // A revised param -> U V for a more spherical mapping:
     function paramToUV(iv, iu) {
-        // Retrieve the actual angles from arrays
-        let vRad = vAngles[iv]; // in [-π/2..+π/2]
-        let uRad = uAngles[iu]; // in [0..2π]
-
-        // Spherical-like transform:
-        // uCoord in [0..1] as uRad goes from 0..2π
-        // vCoord in [0..1] as vRad goes from -π/2..+π/2
-        let uCoord = uRad / (2.0 * Math.PI);
-        let vCoord = (vRad + Math.PI * 0.5) / Math.PI;
-
-        return [uCoord, vCoord];
+        let vRad = vAngles[iv];
+        let uRad = uAngles[iu];
+        let uu = uRad / (2 * Math.PI);
+        let vv = (vRad + Math.PI * 0.5) / Math.PI;
+        return [uu, vv];
     }
 
     faces.forEach(([iA, iB, iC]) => {
@@ -254,12 +221,9 @@ function CreateSurfaceData(data) {
         let nA = normalizedNormals[iA];
         let nB = normalizedNormals[iB];
         let nC = normalizedNormals[iC];
+        let sumN = m4.addVectors(m4.addVectors(nA, nB), nC);
+        let faceNormal = m4.normalize(sumN);
 
-        // Face normal from average of the three:
-        let sumABC = m4.addVectors(m4.addVectors(nA, nB), nC);
-        let faceNormal = m4.normalize(sumABC);
-
-        // Get (iv, iu) from indices for texture coordinate
         let ivA = Math.floor(iA / (uCount + 1));
         let iuA = iA % (uCount + 1);
         let ivB = Math.floor(iB / (uCount + 1));
@@ -267,52 +231,92 @@ function CreateSurfaceData(data) {
         let ivC = Math.floor(iC / (uCount + 1));
         let iuC = iC % (uCount + 1);
 
-        // Get the UV coords
         let uvA = paramToUV(ivA, iuA);
         let uvB = paramToUV(ivB, iuB);
         let uvC = paramToUV(ivC, iuC);
 
-        // A quick tangent for the face:
         let faceTangent = computeFaceTangent(pA, pB, pC, uvA, uvB, uvC);
         faceTangent = m4.normalize(faceTangent);
 
-        // Replicate each corner with the face normal, face tangent, and local UV
         [[pA, faceNormal, faceTangent, uvA],
         [pB, faceNormal, faceTangent, uvB],
         [pC, faceNormal, faceTangent, uvC]
-        ].forEach((elem) => {
-            let pos = elem[0];
-            let nor = elem[1];
-            let tan = elem[2];
-            let uv = elem[3];
+        ].forEach(elem => {
             flatVertices.push(new FlatVertex(
-                pos[0], pos[1], pos[2],
-                nor[0], nor[1], nor[2],
-                tan[0], tan[1], tan[2],
-                uv[0], uv[1]
+                elem[0][0], elem[0][1], elem[0][2],
+                elem[1][0], elem[1][1], elem[1][2],
+                elem[2][0], elem[2][1], elem[2][2],
+                elem[3][0], elem[3][1]
             ));
             flatIndices.push(idxCounter++);
         });
     });
 
-    // 6) Convert to typed arrays
+    // Convert to typed arrays
     let positions = new Float32Array(flatVertices.length * 3);
     let normals = new Float32Array(flatVertices.length * 3);
     let tangents = new Float32Array(flatVertices.length * 3);
     let texcoords = new Float32Array(flatVertices.length * 2);
 
-    flatVertices.forEach((fv, i) => {
-        positions[3 * i + 0] = fv.x; positions[3 * i + 1] = fv.y; positions[3 * i + 2] = fv.z;
-        normals[3 * i + 0] = fv.nx; normals[3 * i + 1] = fv.ny; normals[3 * i + 2] = fv.nz;
-        tangents[3 * i + 0] = fv.tx; tangents[3 * i + 1] = fv.ty; tangents[3 * i + 2] = fv.tz;
-        texcoords[2 * i + 0] = fv.u; texcoords[2 * i + 1] = fv.v;
+    flatVertices.forEach((v, i) => {
+        positions[3 * i + 0] = v.x; positions[3 * i + 1] = v.y; positions[3 * i + 2] = v.z;
+        normals[3 * i + 0] = v.nx; normals[3 * i + 1] = v.ny; normals[3 * i + 2] = v.nz;
+        tangents[3 * i + 0] = v.tx; tangents[3 * i + 1] = v.ty; tangents[3 * i + 2] = v.tz;
+        texcoords[2 * i + 0] = v.u; texcoords[2 * i + 1] = v.v;
     });
     let indices = new Uint16Array(flatIndices);
 
-    // 7) Return data
     data.positions = positions;
     data.normals = normals;
     data.tangents = tangents;
     data.texcoords = texcoords;
     data.indices = indices;
+}
+
+function generateSphere(center, radius) {
+    const u = 20; // Number of u
+    const v = 20; // Number of v
+    let vertices = [];
+
+    for (let i = 0; i < u; i++) {
+        let theta1 = (i * Math.PI) / u;
+        let theta2 = ((i + 1) * Math.PI) / u;
+
+        for (let j = 0; j < v; j++) {
+            let phi1 = (j * 2.0 * Math.PI) / v;
+            let phi2 = ((j + 1) * 2.0 * Math.PI) / v;
+
+            // Four corners of a quad, turned into two triangles
+            let p1 = sphericalPoint(center, radius, theta1, phi1);
+            let p2 = sphericalPoint(center, radius, theta1, phi2);
+            let p3 = sphericalPoint(center, radius, theta2, phi1);
+            let p4 = sphericalPoint(center, radius, theta2, phi2);
+
+            // Triangle 1
+            vertices.push(
+                p1[0], p1[1], p1[2],
+                p2[0], p2[1], p2[2],
+                p3[0], p3[1], p3[2]
+            );
+
+            // Triangle 2
+            vertices.push(
+                p2[0], p2[1], p2[2],
+                p4[0], p4[1], p4[2],
+                p3[0], p3[1], p3[2]
+            );
+        }
+    }
+    return new Float32Array(vertices);
+}
+
+function sphericalPoint(center, r, theta, phi) {
+    let sinTheta = Math.sin(theta);
+    let cosTheta = Math.cos(theta);
+    let sinPhi = Math.sin(phi);
+    let cosPhi = Math.cos(phi);
+    let x = r * sinTheta * cosPhi + center[0];
+    let y = r * cosTheta + center[1];
+    let z = r * sinTheta * sinPhi + center[2];
+    return [x, y, z];
 }
