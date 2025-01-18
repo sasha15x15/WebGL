@@ -1,31 +1,62 @@
 <!DOCTYPE html>
-<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<html>
 
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
-<title>PA#1</title>
-<style>
-    body {
-        background-color: #EEEEEE;
-    }
-</style>
+    <title>PA#1 (var 17)</title>
+    <style>
+        body {
+            background-color: #EEEEEE;
 
-<script src="./Utils/trackball-rotator.js"></script>
-<script src="./Utils/m4.js"></script>
-<script src="./shader.gpu"></script>
-<script src="./main.js"></script>
+            display: flex;
+            /* use flexbox layout */
+            flex-direction: column;
+            /*  */
+            align-items: center;
+            /* stack children vertically */
+            justify-content: center;
+            /* center children vertically */
+            height: 100vh;
+            /* full viewport height */
+            margin: 0;
+            /* remove default margin */
+        }
+    </style>
+
+    <script src="./Utils/trackball-rotator.js"></script>
+    <script src="./Utils/m4.js"></script>
+    <script src="./shader.gpu"></script>
+    <script src="./main.js"></script>
+    <script src="./model.js"></script>
 
 </head>
+
 <body onload="init()">
 
-<h2>A Cube with "Trackball" Mouse Rotation</h2>
+    <h2 style="margin: 15px;">Corrugated sphere with "Trackball" rotation</h2>
 
-<p id="message">Drag your mouse on the cube to rotate it.<br>
-(On a touch screen, you can use your finger.)</p>
+    <p id="message" style="margin: 10px; text-align: center;">Drag your mouse on the cube to rotate it.<br>
+        (On a touch screen, you can use your finger.)</p>
 
+    <div style="margin: 10px; text-align: center;">
+        <label for="vSlider" style="vertical-align: middle;">U: </label>
+        <input type="range" id="vSlider" value="25" min="10" max="100" step="1"
+            style="width: 140px; vertical-align: middle;">
+        <input type="number" id="vValue" value="25" min="10" max="100" step="1"
+            style="width: 50px; vertical-align: middle; margin-left: 10px;">
 
-<div id="canvas-holder">
-   <canvas width="600" height="600" id="webglcanvas" style="background-color:red"></canvas>
-</div>
+        <label for="uSlider" style="margin-left: 35px; vertical-align: middle;">V: </label>
+        <input type="range" id="uSlider" value="25" min="10" max="100" step="1"
+            style="width: 140px; vertical-align: middle;">
+        <input type="number" id="uValue" value="25" min="10" max="100" step="1"
+            style="width: 50px; vertical-align: middle; margin-left: 10px;">
+    </div>
 
+    <div id="canvas-holder" style="margin: 10px;">
+        <canvas width=" 720" height="480" id="webglcanvas" style="background-color:grey;"></canvas>
+    </div>
 
-</body></html>
+</body>
+
+</html>

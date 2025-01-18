@@ -1,5 +1,9 @@
 # WebGL
 
-Project that accompanies VGGI credit module.
+Practical Assignments for the VGGI credit module (https://vggi-kpi.blogspot.com).
 
-Visit vggi-kpi.blogspot.com for more information
+Based on the project in the ademch/WebGL repository (https://github.com/ademch/WebGL).
+
+# PA1 
+![plot](./images/image1.png)
+![plot](./images/image2.png)
