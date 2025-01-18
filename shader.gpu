@@ -1,26 +1,45 @@
 // Vertex Shader
 const vertexShaderSource = `
-attribute vec3 aPosition;   // Incoming vertex position (x, y, z)
-attribute vec3 aNormal;     // Incoming vertex normal (nx, ny, nz)
+attribute vec3 aPosition;        // Incoming vertex position (x, y, z)
+attribute vec3 aNormal;          // Incoming vertex normal   (nx, ny, nz)
+attribute vec3 aTangent;         // vertex tangent  (tx, ty, tz)
+attribute vec2 aTexCoord;        // vertex texture coordinate (u,v)
 
-// Transformation matrices (applied to vertex positions/normals)
-uniform mat4 uModelViewMatrix;  // Model + View transformation
-uniform mat4 uProjectionMatrix; // Projection transformation
-uniform mat4 uNormalMatrix;     // Special matrix for transforming normals
-uniform vec3 uLightPos;         // Light source position
+// Matrices
+uniform mat4 uModelViewMatrix;   // Model+View
+uniform mat4 uProjectionMatrix;  // Projection
+uniform mat4 uNormalMatrix;      // for transforming normals
 
-varying vec3 vNormal;     // Normal to pass to the fragment shader
-varying vec3 vPosWorld;   // Transformed vertex position
+// Varying variables passed to fragment shader
+varying vec3 vPosWorld;          // position in eye/world space
+varying vec2 vTexCoord;          // texture coordinate
+varying mat3 vTBN;               // TBN matrix for normal mapping
 
 void main() {
-    // Transform vertex position to world/eye space
+    // 1) Compute the world-space position of the vertex
     vec4 posWorld4 = uModelViewMatrix * vec4(aPosition, 1.0);
     vPosWorld = posWorld4.xyz;
 
-    // Transform normal using the normal matrix
-    vNormal = mat3(uNormalMatrix) * aNormal;
+    // 2) Transform the normal by the normal matrix
+    //    Priority to normal in  Gram-Schmidt approach
+    vec3 N = normalize(mat3(uNormalMatrix) * aNormal);
 
-    // Transform position to clip space for rendering
+    // 3) Transform the tangent by the normal matrix
+    //    Then orthogonalize tangent to normal, giving priority to normal.
+    vec3 T = normalize(mat3(uNormalMatrix) * aTangent);
+    // Gram-Schmidt step:
+    T = normalize(T - dot(T, N) * N);
+
+    // 4) Compute the bitangent as cross(N, T).
+    vec3 B = cross(N, T);
+
+    // 5) Construct TBN
+    vTBN = mat3(T, B, N);
+
+    // 6) Pass the texture coordinate
+    vTexCoord = aTexCoord;
+
+    // 7) Compute the final clip-space position
     gl_Position = uProjectionMatrix * posWorld4;
 }`;
 
@@ -28,56 +47,70 @@ void main() {
 // Fragment Shader
 const fragmentShaderSource = `
 #ifdef GL_FRAGMENT_PRECISION_HIGH
-   precision highp float;   // High precision if available
+   precision highp float;
 #else
-   precision mediump float; // Otherwise medium precision
+   precision mediump float;
 #endif
 
-// Uniforms for lighting and material properties
-uniform vec3 uLightPos;      // Light source position in the same space as vPosWorld
-uniform vec4 uColor;         // Base color of the surface
-uniform float uAmbientFactor;  // Ambient light intensity multiplier
-uniform float uDiffuseFactor;  // Diffuse reflection multiplier
-uniform float uSpecularFactor; // Specular reflection multiplier
-uniform float uShininess;      // Shininess exponent for specular highlights
+// Uniforms for lighting
+uniform vec3 uLightPos;      // light position in same space as vPosWorld
+uniform float uAmbientFactor;
+uniform float uDiffuseFactor;
+uniform float uSpecularFactor;
+uniform float uShininess;
 
-// Varyings passed from vertex shader
-varying vec3 vNormal;   // The normal vector
-varying vec3 vPosWorld; // The vertex position in eye/world space
+// Uniform color base
+uniform vec4 uColor;
+
+// Camera direction assumption for shading
+uniform vec3 uViewDir;
+
+// Samplers for texturing
+uniform sampler2D uDiffuseSampler;  // diffuse texture
+uniform sampler2D uSpecularSampler; // specular texture
+uniform sampler2D uNormalSampler;   // normal map
+
+// Varyings from vertex shader
+varying vec3 vPosWorld;
+varying vec2 vTexCoord;
+varying mat3 vTBN;
 
 void main() {
-    // 1) Normalize the interpolated normal vector.
-    vec3 N = normalize(vNormal);
-    
-    // 2) Compute the light direction:
-    //    L = (LightPos - SurfacePos). If in the same space, we can directly subtract.
+    // 1) Retrieve normal from normal map (in tangent space), transform to world/eye space
+    vec3 textureNormal = texture2D(uNormalSampler, vTexCoord).rgb;
+    textureNormal = 2.0 * textureNormal - 1.0;
+    vec3 N = normalize(vTBN * textureNormal);
+
+    // 2) Compute the light direction
     vec3 L = normalize(uLightPos - vPosWorld);
 
-    // 3) Assume a fixed viewer direction V = (0,0,1) in the same space,
-    //    meaning we treat the camera as if it's looking along the Z-axis.
-    vec3 V = normalize(vec3(0.0, 0.0, 1.0));
+    // 3) Compute the view direction
+    vec3 V = normalize(uViewDir);
 
-    // 4) Reflection vector R = reflect(-L, N)
-    //    -L is the incoming vector, reflect(...) gives reflection about normal N.
+    // 4) Reflection vector
     vec3 R = reflect(-L, N);
 
-    // 5) Compute standard Phong components:
-    //    A) Ambient
+    // 5) Phong components (Ambient, Diffuse, Specular)
+    //    Modulate diffuse by the diffuse texture
+    //    Modulate specular by the specular texture
     float ambient = uAmbientFactor;
-
-    //    B) Diffuse term
-    float diffuse = uDiffuseFactor * max(dot(N, L), 0.0);
-
-    //    C) Specular term
+    float diff = max(dot(N, L), 0.0);
+    float diffuse = uDiffuseFactor * diff;
     float specAngle = max(dot(R, V), 0.0);
     float specular = uSpecularFactor * pow(specAngle, uShininess);
 
-    // 6) Combine the three terms => total intensity
+    // Combine lighting intensities
     float intensity = ambient + diffuse + specular;
 
-    // 7) Apply intensity to the base color. uColor.rgb is the object’s color
-    vec3 color = uColor.rgb * intensity;
+    // Sample the diffuse texture
+    vec3 diffuseTex = texture2D(uDiffuseSampler, vTexCoord).rgb;
+    // Sample the specular texture
+    vec3 specularTex = texture2D(uSpecularSampler, vTexCoord).rgb;
+
+    // The final color uses the base color tinted by the diffuse texture
+    // plus specular tinted by the specular texture
+    vec3 color = diffuseTex * diffuse + specularTex * specular + (ambient * diffuseTex);
 
     // Write final pixel color
-    gl_FragColor = vec4(color, uColor.a);
+    gl_FragColor = vec4(color, 1.0);
 }`;
