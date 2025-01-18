@@ -1,22 +1,83 @@
-// Vertex shader
+// Vertex Shader
 const vertexShaderSource = `
-attribute vec3 vertex;
-uniform mat4 ModelViewProjectionMatrix;
+attribute vec3 aPosition;   // Incoming vertex position (x, y, z)
+attribute vec3 aNormal;     // Incoming vertex normal (nx, ny, nz)
+
+// Transformation matrices (applied to vertex positions/normals)
+uniform mat4 uModelViewMatrix;  // Model + View transformation
+uniform mat4 uProjectionMatrix; // Projection transformation
+uniform mat4 uNormalMatrix;     // Special matrix for transforming normals
+uniform vec3 uLightPos;         // Light source position
+
+varying vec3 vNormal;     // Normal to pass to the fragment shader
+varying vec3 vPosWorld;   // Transformed vertex position
 
 void main() {
-    gl_Position = ModelViewProjectionMatrix * vec4(vertex,1.0);
+    // Transform vertex position to world/eye space
+    vec4 posWorld4 = uModelViewMatrix * vec4(aPosition, 1.0);
+    vPosWorld = posWorld4.xyz;
+
+    // Transform normal using the normal matrix
+    vNormal = mat3(uNormalMatrix) * aNormal;
+
+    // Transform position to clip space for rendering
+    gl_Position = uProjectionMatrix * posWorld4;
 }`;
 
 
-// Fragment shader
+// Fragment Shader
 const fragmentShaderSource = `
 #ifdef GL_FRAGMENT_PRECISION_HIGH
-   precision highp float;
+   precision highp float;   // High precision if available
 #else
-   precision mediump float;
+   precision mediump float; // Otherwise medium precision
 #endif
 
-uniform vec4 color;
+// Uniforms for lighting and material properties
+uniform vec3 uLightPos;      // Light source position in the same space as vPosWorld
+uniform vec4 uColor;         // Base color of the surface
+uniform float uAmbientFactor;  // Ambient light intensity multiplier
+uniform float uDiffuseFactor;  // Diffuse reflection multiplier
+uniform float uSpecularFactor; // Specular reflection multiplier
+uniform float uShininess;      // Shininess exponent for specular highlights
+
+// Varyings passed from vertex shader
+varying vec3 vNormal;   // The normal vector
+varying vec3 vPosWorld; // The vertex position in eye/world space
+
 void main() {
-    gl_FragColor = color;
+    // 1) Normalize the interpolated normal vector.
+    vec3 N = normalize(vNormal);
+    
+    // 2) Compute the light direction:
+    //    L = (LightPos - SurfacePos). If in the same space, we can directly subtract.
+    vec3 L = normalize(uLightPos - vPosWorld);
+
+    // 3) Assume a fixed viewer direction V = (0,0,1) in the same space,
+    //    meaning we treat the camera as if it's looking along the Z-axis.
+    vec3 V = normalize(vec3(0.0, 0.0, 1.0));
+
+    // 4) Reflection vector R = reflect(-L, N)
+    //    -L is the incoming vector, reflect(...) gives reflection about normal N.
+    vec3 R = reflect(-L, N);
+
+    // 5) Compute standard Phong components:
+    //    A) Ambient
+    float ambient = uAmbientFactor;
+
+    //    B) Diffuse term
+    float diffuse = uDiffuseFactor * max(dot(N, L), 0.0);
+
+    //    C) Specular term
+    float specAngle = max(dot(R, V), 0.0);
+    float specular = uSpecularFactor * pow(specAngle, uShininess);
+
+    // 6) Combine the three terms => total intensity
+    float intensity = ambient + diffuse + specular;
+
+    // 7) Apply intensity to the base color. uColor.rgb is the object’s color
+    vec3 color = uColor.rgb * intensity;
+
+    // Write final pixel color
+    gl_FragColor = vec4(color, uColor.a);
 }`;

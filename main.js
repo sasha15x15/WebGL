@@ -1,178 +1,237 @@
 'use strict';
 
+let gl;          // The WebGL rendering context
+let surface;     // A 'Model' object for our surface geometry
+let shProgram;   // The compiled & linked shader program
+let spaceball;   // Object to handle trackball-like rotation (user interaction)
 
-let gl;                         // The webgl context
-let surface;                    // A surface model
-let shProgram;                  // A shader program
-let spaceball;                  // A SimpleRotator object that lets the user rotate the view by mouse
+// Light rotation angle around the Z-axis
+let lightAngle = 0.0;
 
-
-// Constructor
+/**
+ * A small wrapper object around a compiled and linked GLSL program.
+ * Holds references to attribute/uniform locations, so we don't need
+ * repeated lookups.
+ */
 function ShaderProgram(name, program) {
-
     this.name = name;
     this.prog = program;
 
-    // Location of the attribute variable in the shader program.
-    this.iAttribVertex = -1;
-    // Location of the uniform specifying a color for the primitive.
-    this.iColor = -1;
-    // Location of the uniform matrix representing the combined transformation.
-    this.iModelViewProjectionMatrix = -1;
+    // -- Attributes --
+    // aPosition and aNormal are inputs to the vertex shader
+    this.iAttribVertex = gl.getAttribLocation(program, "aPosition");
+    this.iAttribNormal = gl.getAttribLocation(program, "aNormal");
 
+    // -- Uniforms --
+    // Matrices
+    this.iModelViewMatrix = gl.getUniformLocation(program, "uModelViewMatrix");
+    this.iProjectionMatrix = gl.getUniformLocation(program, "uProjectionMatrix");
+    this.iNormalMatrix = gl.getUniformLocation(program, "uNormalMatrix");
+
+    // Lighting
+    this.iLightPos = gl.getUniformLocation(program, "uLightPos");
+
+    // Material/Lighting factors
+    this.iColor = gl.getUniformLocation(program, "uColor");
+    this.iAmbientFactor = gl.getUniformLocation(program, "uAmbientFactor");
+    this.iDiffuseFactor = gl.getUniformLocation(program, "uDiffuseFactor");
+    this.iSpecularFactor = gl.getUniformLocation(program, "uSpecularFactor");
+    this.iShininess = gl.getUniformLocation(program, "uShininess");
+
+    /**
+     * Helper function to set this shader as the active program,
+     * i.e. to call `gl.useProgram(...)`.
+     */
     this.Use = function () {
         gl.useProgram(this.prog);
-    }
+    };
 }
 
-
-/* Draws a colored cube, along with a set of coordinate axes.
- * (Note that the use of the above drawPrimitive function is not an efficient
- * way to draw with WebGL.  Here, the geometry is so simple that it doesn't matter.)
+/**
+ * This function is called continuously via `requestAnimationFrame(draw)`.
+ * It handles:
+ *   1) Clearing the screen
+ *   2) Setting up camera and lighting uniforms
+ *   3) Drawing the surface geometry
+ *   4) Requesting another frame to animate
  */
 function draw() {
-    gl.clearColor(51 / 255, 51 / 255, 51 / 255, 1); // `Dark charcoal` background
-
+    // Clear color and depth buffers
+    gl.clearColor(10 / 255, 10 / 255, 10 / 255, 1.0); // grayish background
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    /* Set the values of the projection transformation */
+    // Prepare a perspective projection matrix.
+    //   fov = π/8 (22.5 degrees),
+    //   aspect = 1 (square viewport),
+    //   near = 8, far = 12
     let projection = m4.perspective(Math.PI / 8, 1, 8, 12);
 
-    /* Get the view matrix from the SimpleRotator object.*/
+    // Get the current trackball-based view transformation
     let modelView = spaceball.getViewMatrix();
 
-    let rotateToPointZero = m4.axisRotation([0.707, 0.707, 0], 0.7);
+    // Translate the entire scene backwards, so the object is in front of the camera
     let translateToPointZero = m4.translation(0, 0, -10);
+    modelView = m4.multiply(translateToPointZero, modelView);
 
-    let matAccum0 = m4.multiply(rotateToPointZero, modelView);
-    let matAccum1 = m4.multiply(translateToPointZero, matAccum0);
+    // Compute the normal matrix = (modelView^-1)^T
+    //  used to properly transform normals under rotation/scaling
+    let normalMatrix = m4.inverse(modelView);
+    normalMatrix = m4.transpose(normalMatrix);
 
-    /* Multiply the projection matrix times the modelview matrix to give the
-       combined transformation matrix, and send that to the shader program. */
-    let modelViewProjection = m4.multiply(projection, matAccum1);
+    // ---- Pass the transformation matrices to the GPU ----
+    gl.uniformMatrix4fv(shProgram.iModelViewMatrix, false, modelView);
+    gl.uniformMatrix4fv(shProgram.iProjectionMatrix, false, projection);
+    gl.uniformMatrix4fv(shProgram.iNormalMatrix, false, normalMatrix);
 
-    gl.uniformMatrix4fv(shProgram.iModelViewProjectionMatrix, false, modelViewProjection);
+    // Animate the light by rotating around Z-axis
+    // Increase angle each frame
+    lightAngle += 0.005;
+    // Keep angle in [0, 2π)
+    lightAngle %= 2.0 * Math.PI;
 
-    /* Draw the six faces of a cube, with different colors. */
-    gl.uniform4fv(shProgram.iColor, [1, 1, 0, 1]);
+    // Convert polar coords to Cartesian for the light
+    let radius = 30.0;
+    let lx = radius * Math.cos(lightAngle);
+    let ly = radius * Math.sin(lightAngle);
+    let lz = -20.0;  // a constant vertical offset
+    gl.uniform3fv(shProgram.iLightPos, [lx, ly, lz]);
 
+    // Set some material parameters for lighting
+    // Here we just fix them, but you could expose them in a UI
+    gl.uniform4fv(shProgram.iColor, [255 / 255, 0 / 255, 255 / 255, 1.0]); // a gold color
+    gl.uniform1f(shProgram.iAmbientFactor, 0.2);
+    gl.uniform1f(shProgram.iDiffuseFactor, 0.6);
+    gl.uniform1f(shProgram.iSpecularFactor, 0.8);
+    gl.uniform1f(shProgram.iShininess, 20.0);
+
+    // Draw the surface geometry (created in model.js)
+    // This triggers gl.drawElements(...) with the current buffers
     surface.Draw();
+
+    // Request another frame for continuous animation
+    requestAnimationFrame(draw);
 }
 
-
-function initGL() {
-    let prog = createProgram(gl, vertexShaderSource, fragmentShaderSource);
-
-    shProgram = new ShaderProgram('Basic', prog);
-    shProgram.Use();
-
-    shProgram.iAttribVertex = gl.getAttribLocation(prog, "vertex");
-    shProgram.iModelViewProjectionMatrix = gl.getUniformLocation(prog, "ModelViewProjectionMatrix");
-    shProgram.iColor = gl.getUniformLocation(prog, "color");
-
-    surface = new Model('Surface');
-    surface.BufferData(CreateSurfaceData());
-
-    gl.enable(gl.DEPTH_TEST);
-}
-
-
-/* Creates a program for use in the WebGL context gl, and returns the
- * identifier for that program.  If an error occurs while compiling or
- * linking the program, an exception of type Error is thrown.  The error
- * string contains the compilation or linking error.  If no error occurs,
- * the program identifier is the return value of the function.
- * The second and third parameters are strings that contain the
- * source code for the vertex shader and for the fragment shader.
+/**
+ * Called once at startup. Sets up shaders, buffers, and basic GL settings.
  */
-function createProgram(gl, vShader, fShader) {
+function initGL() {
+    // 1) Create and compile the vertex shader
     let vsh = gl.createShader(gl.VERTEX_SHADER);
-    gl.shaderSource(vsh, vShader);
+    gl.shaderSource(vsh, vertexShaderSource);
     gl.compileShader(vsh);
     if (!gl.getShaderParameter(vsh, gl.COMPILE_STATUS)) {
-        throw new Error("Error in vertex shader:  " + gl.getShaderInfoLog(vsh));
+        throw new Error("Vertex shader error:\n" + gl.getShaderInfoLog(vsh));
     }
+
+    // 2) Create and compile the fragment shader
     let fsh = gl.createShader(gl.FRAGMENT_SHADER);
-    gl.shaderSource(fsh, fShader);
+    gl.shaderSource(fsh, fragmentShaderSource);
     gl.compileShader(fsh);
     if (!gl.getShaderParameter(fsh, gl.COMPILE_STATUS)) {
-        throw new Error("Error in fragment shader:  " + gl.getShaderInfoLog(fsh));
+        throw new Error("Fragment shader error:\n" + gl.getShaderInfoLog(fsh));
     }
+
+    // 3) Link the two shaders into a GPU program
     let prog = gl.createProgram();
     gl.attachShader(prog, vsh);
     gl.attachShader(prog, fsh);
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-        throw new Error("Link error in program:  " + gl.getProgramInfoLog(prog));
+        throw new Error("Link error:\n" + gl.getProgramInfoLog(prog));
     }
-    return prog;
+
+    // 4) Create a ShaderProgram wrapper for convenience
+    shProgram = new ShaderProgram("BasicProgram", prog);
+    // Use this program for subsequent draw calls
+    shProgram.Use();
+
+    // 5) Generate the geometry data (positions/normals/indices) in model.js
+    let data = {};
+    CreateSurfaceData(data);
+
+    // 6) Create a Model object and upload data to its GPU buffers
+    surface = new Model("Surface");
+    surface.BufferData(data.positions, data.normals, data.indices);
+
+    // 7) Enable depth testing
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.clearDepth(1.0);
 }
 
-
 /**
- * initialization function that will be called when the page has loaded
+ * The main entry point. It:
+ *   - Gets the <canvas>
+ *   - Creates a WebGL context
+ *   - Calls initGL() to set up everything
+ *   - Sets up trackball + slider event logic
+ *   - Launches the animation loop
  */
 function init() {
     let canvas;
     try {
+        // Grab the canvas from the DOM
         canvas = document.getElementById("webglcanvas");
+        // Try to get WebGL context
         gl = canvas.getContext("webgl");
         if (!gl) {
-            throw "Browser does not support WebGL";
+            throw "Browser does not support WebGL.";
         }
-    }
-    catch (e) {
+    } catch (e) {
+        // If we fail, show an error in the page
         document.getElementById("canvas-holder").innerHTML =
-            "<p>Sorry, could not get a WebGL graphics context.</p>";
+            "<p>Could not initialize WebGL context:</p>" + e;
         return;
     }
+
     try {
-        initGL();  // initialize the WebGL graphics context
-    }
-    catch (e) {
+        // Initialize all GL-related resources (shaders, buffers, etc.)
+        initGL();
+    } catch (e) {
         document.getElementById("canvas-holder").innerHTML =
-            "<p>Sorry, could not initialize the WebGL graphics context: " + e + "</p>";
+            "<p>Could not init WebGL:</p>" + e;
         return;
     }
 
-    spaceball = new TrackballRotator(canvas, draw, 0);
+    // Set up a trackball for user interaction (rotation)
+    spaceball = new TrackballRotator(canvas, null, 0);
 
-    // Get references to the sliders and their display elements
-    let vSlider = document.getElementById("vSlider");
-    let uSlider = document.getElementById("uSlider");
+    // Connect slider UI elements for adjusting surface resolution
+    vSlider = document.getElementById("vSlider");
+    uSlider = document.getElementById("uSlider");
     let vValue = document.getElementById("vValue");
     let uValue = document.getElementById("uValue");
 
-    // Set up event listeners for the sliders
+    // Keep text boxes in sync with slider changes
     vSlider.oninput = function () {
-        vValue.value = vSlider.value; // Update the displayed value for v
-        updateSurface(); // Update the surface with the new vVerticesNumber
+        vValue.value = vSlider.value;
+        rebuildSurface();
     };
-
-    // Set up event listeners for the number input fields
     vValue.oninput = function () {
-        vSlider.value = vValue.value; // Sync the slider with the manual input
-        updateSurface(); // Update the surface with the new vVerticesNumber
+        vSlider.value = vValue.value;
+        rebuildSurface();
     };
-
     uSlider.oninput = function () {
         uValue.value = uSlider.value;
-        updateSurface();
+        rebuildSurface();
     };
-
     uValue.oninput = function () {
         uSlider.value = uValue.value;
-        updateSurface();
+        rebuildSurface();
     };
 
-    // Function to update the surface based on the new numbers of vertices
-    function updateSurface() {
-        // Generate the updated surface data
-        // Update the model's buffer data
-        surface.BufferData(CreateSurfaceData());
-        // Redraw the scene with the updated surface
-        draw();
+    /**
+     * Rebuild the geometry whenever the user changes slider values.
+     * This re-calls CreateSurfaceData(...) with new resolution
+     * and re-uploads the data to the GPU buffers.
+     */
+    function rebuildSurface() {
+        let data = {};
+        CreateSurfaceData(data);
+        surface.BufferData(data.positions, data.normals, data.indices);
     }
 
-    draw();
+    // Start the continuous render loop
+    requestAnimationFrame(draw);
 }
